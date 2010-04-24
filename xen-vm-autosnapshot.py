@@ -1,6 +1,7 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
 ################################################################################
-# XenServer VM automatic snapshot script
+# XenServer VM automatic snapshot rotation script
 # Copyright (c) 2009 Michael Conigliaro <mike [at] conigliaro [dot] org>
 #
 # This program is free software; you can redistribute it and/or modify
@@ -17,17 +18,6 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 ################################################################################
-#
-# Change Log:
-#
-# 1.0 (2009-05-19)
-#   * Initial release
-#
-
-
-__version__ = "1.0"
-
-
 import getpass
 import logging
 import logging.handlers
@@ -37,6 +27,11 @@ import sys
 import time
 
 import XenAPI
+
+
+APP_VERSION = "1.2"
+APP_AUTHOR = "Michael T. Conigliaro <mike [at] conigliaro [dot] org>"
+APP_WEBSITE = "http://conigliaro.org/"
 
 
 def snapshot():
@@ -59,13 +54,14 @@ def snapshot():
             log.debug("Selecting VM: %s (%s)" %
                 (vm_record["name_label"], vm_record["uuid"]))
 
-            # snapshot name is time-based
-            snapshot_name = "%s: %s" % (vm_record["name_label"],
-                                        time.strftime("%Y-%m-%d %H:%M:%S"))
+            # snapshot name is based on time/tag
+            snapshot_name = "%s: %s %s" % (vm_record["name_label"],
+                                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                                        options.snapshot_tag)
 
             # create snapshot
             log.info("Creating VM snapshot: %s" % snapshot_name)
-            if not options.test:
+            if not options.dry_run:
                 done = False
                 tries = 0
                 while not done and tries <= options.retry_max:
@@ -101,71 +97,79 @@ def snapshot_rotate():
     for vm in all_vms:
         vm_record = all_vms[vm]
 
-        # count snapshots
-        snapshot_count = len(vm_record["snapshots"])
-
         # select appropriate vm
         if re_vmnames.match(vm_record["name_label"]) and \
-           snapshot_count > options.snapshot_max and \
            not vm_record["is_a_template"] and \
            not vm_record["is_control_domain"]:
             log.debug("Selecting VM: %s (%s)" % (vm_record["name_label"],
-                                                vm_record["uuid"]))
+                                                 vm_record["uuid"]))
 
-            # sort snapshots by date, oldest first
-            vm_snapshots = sorted(vm_record["snapshots"],
-                           key=lambda x: all_vms[x]["snapshot_time"])
+            # create list of snapshots (with matching tag only)
+            snapshot_count = 0
+            vm_snapshots = {}
+            for snapshot in vm_record["snapshots"]:
+                if all_vms[snapshot]["name_label"].endswith(' ' + options.snapshot_tag):
+                    vm_snapshots[snapshot] = all_vms[snapshot]
 
-            # loop through old snapshots
-            for snapshot in vm_snapshots[0:snapshot_count - options.snapshot_max]:
+            # check snapshot count
+            snapshot_count = len(vm_snapshots)
+            log.debug("Found %d snapshot(s)" % snapshot_count)
+            if snapshot_count > options.snapshot_max:
 
-                # search and destroy old vm snapshot
-                snapshot_record = all_vms[snapshot]
-                log.debug("Found VM snapshot: %s (%s)" %
-                    (snapshot_record["name_label"], snapshot_record["uuid"]))
-                log.info("Destroying VM snapshot: %s" % snapshot_record["name_label"])
-                if not options.test:
-                    done = False
-                    tries = 0
-                    while not done and tries <= options.retry_max:
-                        if tries:
-                            log.info("Retrying in %d seconds [%d/%d]" %
-                                (options.retry_delay, tries, options.retry_max))
-                            time.sleep(options.retry_delay)
-                        try:
-                            tries += 1
-                            session.xenapi.VM.destroy(snapshot)
-                            done = True
-                        except Exception, e:
-                            log.error("Unhandled exception: %s" % str(e))
-                            #raise
+                # sort snapshots by date, oldest first
+                vm_snapshots = sorted(vm_snapshots,
+                               key=lambda x: all_vms[x]["snapshot_time"])
 
-                # loop through this snapshot's vbds (disks only)
-                for vbd in snapshot_record["VBDs"]:
-                    vbd_record = all_vbds[vbd]
-                    if vbd_record["type"] == "Disk":
+                # loop through old snapshots
+                for snapshot in vm_snapshots[0:snapshot_count - options.snapshot_max]:
 
-                        # search and destroy corresponding vdi
-                        vdi_record = all_vdis[vbd_record["VDI"]]
-                        vdi = session.xenapi.VDI.get_by_uuid(vdi_record["uuid"])
-                        log.debug("Found VDI snapshot: %s (%s)" %
-                            (vdi_record["name_label"], vdi_record["uuid"]))
-                        log.info("Destroying VDI snapshot: %s" % vdi_record["name_label"])
-                        if not options.test:
-                            done = False
-                            tries = 0
-                            while not done and tries <= options.retry_max:
-                                if tries:
-                                    log.info("Retrying in %d seconds [%d/%d]" %
-                                        (options.retry_delay, tries, options.retry_max))
-                                    time.sleep(options.retry_delay)
-                                try:
-                                    tries += 1
-                                    session.xenapi.VDI.destroy(vdi)
-                                    done = True
-                                except Exception, e:
-                                    log.error("Unhandled exception: %s" % str(e))
-                                    #raise
+                    # destroy old vm snapshot
+                    snapshot_record = all_vms[snapshot]
+                    log.debug("Selecting VM snapshot: %s (%s)" %
+                        (snapshot_record["name_label"], snapshot_record["uuid"]))
+                    log.info("Destroying VM snapshot: %s" % snapshot_record["name_label"])
+                    if not options.dry_run:
+                        done = False
+                        tries = 0
+                        while not done and tries <= options.retry_max:
+                            if tries:
+                                log.info("Retrying in %d seconds [%d/%d]" %
+                                    (options.retry_delay, tries, options.retry_max))
+                                time.sleep(options.retry_delay)
+                            try:
+                                tries += 1
+                                session.xenapi.VM.destroy(snapshot)
+                                done = True
+                            except Exception, e:
+                                log.error("Unhandled exception: %s" % str(e))
+                                #raise
+
+                    # loop through this snapshot's vbds (disks only)
+                    for vbd in snapshot_record["VBDs"]:
+                        vbd_record = all_vbds[vbd]
+                        if vbd_record["type"] == "Disk":
+
+                            # destroy corresponding vdi
+                            vdi_record = all_vdis[vbd_record["VDI"]]
+                            vdi = session.xenapi.VDI.get_by_uuid(vdi_record["uuid"])
+                            log.debug("Selecting VDI snapshot: %s (%s)" %
+                                (vdi_record["name_label"], vdi_record["uuid"]))
+                            log.info("Destroying VDI snapshot: %s" % vdi_record["name_label"])
+                            if not options.dry_run:
+                                done = False
+                                tries = 0
+                                while not done and tries <= options.retry_max:
+                                    if tries:
+                                        log.info("Retrying in %d seconds [%d/%d]" %
+                                            (options.retry_delay, tries, options.retry_max))
+                                        time.sleep(options.retry_delay)
+                                    try:
+                                        tries += 1
+                                        session.xenapi.VDI.destroy(vdi)
+                                        done = True
+                                    except Exception, e:
+                                        log.error("Unhandled exception: %s" % str(e))
+                                        #raise
 
 
 if __name__ == "__main__":
@@ -174,7 +178,7 @@ if __name__ == "__main__":
     valid_args = ['snapshot', 'snapshot-rotate']
     op = optparse.OptionParser("usage: %prog [options] <" +
         ' '.join(map(lambda x: "[%s]" % x, valid_args)) + ">",
-        version="%prog v" + __version__)
+        version="%%prog v%s\nAuthor: %s\nWebsite: %s" % (APP_VERSION, APP_AUTHOR, APP_WEBSITE))
 
     og_sess = optparse.OptionGroup(op, "Session Options")
     og_sess.add_option('--server',
@@ -186,10 +190,10 @@ if __name__ == "__main__":
     og_sess.add_option('--password',
                        dest='password',
                        help="xenserver password")
-    og_sess.add_option('--test',
-                       dest='test',
+    og_sess.add_option('--dry-run',
+                       dest='dry_run',
                        action='store_true',
-                       help="show what will happen without actually doing it")
+                       help="perform a trial run with no changes")
     op.add_option_group(og_sess)
 
     og_vm = optparse.OptionGroup(op, "VM Selection Options")
@@ -207,6 +211,9 @@ if __name__ == "__main__":
                        dest='snapshot_max',
                        type="int",
                        help="number of snapshots to keep when rotating (default: %default)")
+    og_snap.add_option('--snapshot-tag',
+                       dest="snapshot_tag",
+                       help="snapshot tag (default: %default)")
     op.add_option_group(og_snap)
 
     og_re = optparse.OptionGroup(op, "Retry Options")
@@ -223,8 +230,7 @@ if __name__ == "__main__":
     og_log = optparse.OptionGroup(op, "Output and Logging Options")
     og_log.add_option('--log-level',
                       dest='log_level',
-                      type="int",
-                      help="10=DEBUG, 20=INFO, 30=WARN, 40=ERROR, 50=CRIT (default: %default)")
+                      help="critical, error, warning, info, debug (default: %default)")
     og_log.add_option('--log-file-path',
                       dest='log_file_path',
                       help="path for optional log file")
@@ -248,7 +254,8 @@ if __name__ == "__main__":
                     retry_delay = 10,
                     vm_regex = '^$',
                     snapshot_max = 1,
-                    log_level = logging.INFO,
+                    snapshot_tag = '(auto)',
+                    log_level = 'info',
                     log_file_rotate_interval_type = 'd',
                     log_file_rotate_interval = 7,
                     log_file_max_backups = 4)
@@ -263,7 +270,17 @@ if __name__ == "__main__":
 
     # set up logging
     log = logging.getLogger()
-    log.setLevel(options.log_level)
+    options.log_level = options.log_level.upper()
+    if options.log_level == 'CRITICAL':
+        log.setLevel(logging.CRITICAL)
+    elif options.log_level == 'ERROR':
+        log.setLevel(logging.ERROR)
+    elif options.log_level == 'WARNING':
+        log.setLevel(logging.WARNING)
+    elif options.log_level == 'INFO':
+        log.setLevel(logging.INFO)
+    elif options.log_level == 'DEBUG':
+        log.setLevel(logging.DEBUG)
     consoleLogger = logging.StreamHandler()
     consoleLogger.setFormatter(
             logging.Formatter("%(levelname)s - %(message)s"))
