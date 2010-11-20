@@ -1,0 +1,23 @@
+h1. Xen Tools
+
+Various Xen tools I've written.
+
+h2. Current Tools
+
+* "xen-vm-autosnapshot.py":/mconigliaro/Xen-Tools/raw/master/xen-vm-autosnapshot.py - Command-line utility for taking automatic, rotating VM snapshots. (Note: There is a known issue related to the way NetApp snapshots are deleted (or rather, not deleted) in the current version of the XenAPI. See  "Deleting NetApp snapshots":http://forums.citrix.com/thread.jspa?threadID=242299 for more information.)
+
+h2. Prerequisites
+
+* "Python 2.6":http://python.org/
+* XenAPI.py from the "XenServer SDK":http://community.citrix.com/display/xs/XenServer+SDK
+
+h2. Documentation
+
+See the --help command line option.
+
+h2. Example Usage 
+
+h3. Take a snapshot, then delete all but the latest 3 snapshots:
+
+<pre>xen-vm-autosnapshot.py --server=xenserver01 --username=root --password=12345 \
+--vms="*some_regular_expression*" --snapshot-max=3 snapshot snapshot-rotate </pre>
